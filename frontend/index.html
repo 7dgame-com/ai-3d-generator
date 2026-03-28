@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="AI 3D 模型生成插件 - 混合现实编程教育平台" />
+  <title>AI 3D 模型生成</title>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    /**
+     * 早期初始化脚本（在 Vue 挂载前执行）
+     *
+     * 1. 注册 PostMessage 监听器，避免错过主框架的 INIT 消息
+     * 2. 从 URL 参数检测主题，避免亮色闪烁（FOUC）
+     */
+    (function() {
+      // 保存早期收到的 INIT 消息 payload
+      window.__EARLY_INIT_PAYLOAD__ = null;
+
+      // 监听主框架的 PostMessage 消息
+      window.addEventListener('message', function earlyHandler(event) {
+        if (event.source !== window.parent) return;
+        var data = event.data || {};
+        if (data.type === 'INIT' && data.payload && data.payload.token) {
+          window.__EARLY_INIT_PAYLOAD__ = data.payload;
+          localStorage.setItem('ai-3d-generator-token', data.payload.token);
+          window.parent.postMessage({ type: 'PLUGIN_READY', id: 'ready-early-' + Date.now() }, '*');
+        }
+      });
+
+      // 从 URL 参数初始化主题，避免暗色主题下的亮色闪烁
+      var params = new URLSearchParams(window.location.search);
+      var theme = params.get('theme');
+      var darkThemes = ['deep-space', 'cyber-tech'];
+      if (theme && darkThemes.indexOf(theme) !== -1) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        document.documentElement.classList.add('dark');
+      }
+    })();
+  </script>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
