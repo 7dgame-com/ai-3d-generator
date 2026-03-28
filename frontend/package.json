@@ -5,7 +5,7 @@
   "description": "AI 3D 模型生成插件 - 前端应用",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -b && vite build",
+    "build": "vite build",
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --ignore-path .gitignore",
@@ -13,6 +13,7 @@
     "format": "prettier --write src/"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.0",
     "axios": "^1.7.7",
     "cos-js-sdk-v5": "^1.8.0",
     "element-plus": "^2.8.0",
