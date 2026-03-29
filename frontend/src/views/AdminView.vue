@@ -35,6 +35,28 @@
       </el-form>
     </el-card>
 
+    <!-- Tripo3D 账户余额 -->
+    <el-card class="section-card">
+      <template #header>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span>{{ t('admin.balanceTitle') }}</span>
+          <el-button size="small" :loading="loadingBalance" @click="loadBalance">{{ t('admin.balanceRefresh') }}</el-button>
+        </div>
+      </template>
+      <div v-if="loadingBalance" class="loading-placeholder"><el-skeleton :rows="1" animated /></div>
+      <template v-else-if="balance">
+        <div class="stat-row">
+          <span class="stat-label">{{ t('admin.balanceAvailable') }}</span>
+          <span class="stat-value" style="color:#67c23a;font-size:22px;">{{ balance.available }}</span>
+        </div>
+        <div class="stat-row" style="margin-top:8px;">
+          <span class="stat-label">{{ t('admin.balanceFrozen') }}</span>
+          <span class="stat-value" style="color:#e6a23c;">{{ balance.frozen }}</span>
+        </div>
+      </template>
+      <el-empty v-else :description="t('admin.balanceUnavailable')" :image-size="60" />
+    </el-card>
+
     <!-- 全局用量统计 -->
     <el-card class="section-card">
       <template #header>
@@ -80,25 +102,36 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { usePermissions } from '../composables/usePermissions'
+import { waitForToken } from '../utils/token'
 import { validateApiKey, maskApiKey } from '../utils/validators'
-import { getAdminConfig, saveAdminConfig, getAdminUsage } from '../api/index'
+import { getAdminConfig, saveAdminConfig, getAdminUsage, getAdminBalance, verifyToken } from '../api/index'
 import type { AdminUsage } from '../api/index'
 
 const { t } = useI18n()
 const router = useRouter()
-const { fetchAllowedActions, can } = usePermissions()
 
 const currentMaskedKey = ref<string | null>(null)
 const form = ref({ newApiKey: '' })
 const saving = ref(false)
 const loadingUsage = ref(false)
+const loadingBalance = ref(false)
 const usage = ref<AdminUsage | null>(null)
+const balance = ref<{ available: number; frozen: number } | null>(null)
 
 onMounted(async () => {
-  // 权限守卫
-  await fetchAllowedActions()
-  if (!can('admin-config')) {
+  const token = await waitForToken()
+  if (!token) return
+
+  // 权限守卫：通过 verify-token 拿到 roles，root/admin 才能访问
+  try {
+    const res = await verifyToken()
+    const roles: string[] = res.data?.roles ?? (res.data as any)?.data?.roles ?? []
+    const isRoot = roles.includes('root')
+    if (!isRoot) {
+      router.replace('/no-permission')
+      return
+    }
+  } catch {
     router.replace('/no-permission')
     return
   }
@@ -106,6 +139,7 @@ onMounted(async () => {
   // 加载配置和用量
   loadConfig()
   loadUsage()
+  loadBalance()
 })
 
 async function loadConfig() {
@@ -126,6 +160,22 @@ async function loadUsage() {
     ElMessage.error(t('errors.serverError'))
   } finally {
     loadingUsage.value = false
+  }
+}
+
+async function loadBalance() {
+  loadingBalance.value = true
+  try {
+    const res = await getAdminBalance()
+    if (res.data.configured && res.data.available !== undefined) {
+      balance.value = { available: res.data.available, frozen: res.data.frozen ?? 0 }
+    } else {
+      balance.value = null
+    }
+  } catch {
+    balance.value = null
+  } finally {
+    loadingBalance.value = false
   }
 }
 

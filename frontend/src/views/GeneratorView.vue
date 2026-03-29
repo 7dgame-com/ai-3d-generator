@@ -1,14 +1,20 @@
 <template>
   <div class="generator-view">
-    <!-- API Key 未配置提示 -->
-    <el-alert
-      v-if="!apiKeyConfigured"
-      :title="t('generator.apiKeyNotConfigured')"
-      type="warning"
-      show-icon
-      :closable="false"
-      class="api-key-alert"
-    />
+    <!-- API Key 未配置 - 全屏遮罩，不可关闭 -->
+    <div v-if="apiKeyConfigured === false" class="api-key-blocker">
+      <div class="api-key-blocker__card">
+        <div class="api-key-blocker__icon">⚠️</div>
+        <h2 class="api-key-blocker__title">{{ t('generator.apiKeyBlockerTitle') }}</h2>
+        <p class="api-key-blocker__desc">{{ t('generator.apiKeyBlockerDesc') }}</p>
+        <p class="api-key-blocker__hint">{{ t('generator.apiKeyBlockerHint') }}</p>
+        <!-- 管理员入口：root/admin 角色时显示 -->
+        <div v-if="isRoot" class="api-key-blocker__admin">
+          <el-button type="primary" size="large" @click="router.push('/admin')">
+            {{ t('generator.apiKeyBlockerAdminBtn') }}
+          </el-button>
+        </div>
+      </div>
+    </div>
 
     <!-- 生成区域 -->
     <el-card class="section-card">
@@ -165,7 +171,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { waitForToken } from '../utils/token'
 import { UploadFilled } from '@element-plus/icons-vue'
 import type { UploadFile } from 'element-plus'
 import { usePermissions } from '../composables/usePermissions'
@@ -178,10 +186,12 @@ import {
   listTasks,
   getAdminConfig,
   getDownloadProxyUrl,
+  verifyToken,
 } from '../api/index'
 import type { Task } from '../api/index'
 
 const { t } = useI18n()
+const router = useRouter()
 const { fetchAllowedActions, can } = usePermissions()
 const { startPolling, stopAllPolling } = useTaskPoller()
 const { uploadToCOS } = useUploadService()
@@ -195,6 +205,7 @@ const generatingImage = ref(false)
 const loadingTasks = ref(false)
 const tasks = ref<Task[]>([])
 const apiKeyConfigured = ref(false)
+const isRoot = ref(false)
 
 // Image upload
 const selectedImageFile = ref<File | null>(null)
@@ -216,8 +227,11 @@ const canGenerate = computed(
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
 onMounted(async () => {
+  const token = await waitForToken()
+  console.log('[GeneratorView] waitForToken resolved:', token ? 'has token' : 'null')
+  if (!token) return
   await fetchAllowedActions()
-  await Promise.all([loadAdminConfig(), loadTasks()])
+  await Promise.all([loadAdminConfig(), loadTasks(), loadCurrentUser()])
 })
 
 onUnmounted(() => {
@@ -225,6 +239,16 @@ onUnmounted(() => {
 })
 
 // ── Methods ────────────────────────────────────────────────────────────────
+
+async function loadCurrentUser() {
+  try {
+    const res = await verifyToken()
+    const roles: string[] = res.data?.roles ?? (res.data as any)?.data?.roles ?? []
+    isRoot.value = roles.includes('root')
+  } catch {
+    isRoot.value = false
+  }
+}
 
 async function loadAdminConfig() {
   try {
@@ -385,6 +409,59 @@ async function handleUploadToMain(task: Task) {
 
 .api-key-alert {
   margin-bottom: 0;
+}
+
+.api-key-blocker {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.api-key-blocker__card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 48px 56px;
+  max-width: 480px;
+  width: 90%;
+  text-align: center;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
+}
+
+.api-key-blocker__icon {
+  font-size: 56px;
+  line-height: 1;
+  margin-bottom: 20px;
+}
+
+.api-key-blocker__title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin: 0 0 16px;
+}
+
+.api-key-blocker__desc {
+  font-size: 15px;
+  color: #555;
+  line-height: 1.7;
+  margin: 0 0 12px;
+}
+
+.api-key-blocker__hint {
+  font-size: 13px;
+  color: #999;
+  margin: 0;
+}
+
+.api-key-blocker__admin {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid #eee;
 }
 
 .section-card {

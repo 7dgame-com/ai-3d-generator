@@ -4,6 +4,10 @@ import { query } from '../db/connection';
 import { decrypt } from '../services/crypto';
 import { addTaskToPoller } from '../services/taskPoller';
 import { AuthenticatedRequest } from '../middleware/auth';
+import { creditManager, computeThrottleDelay, sleep, DeductResult } from '../services/creditManager';
+
+const ESTIMATED_CREDIT_COST = 30;
+const MAX_THROTTLE_DELAY_MS = 30000;
 
 const TRIPO_API_BASE = 'https://api.tripo3d.ai/v2/openapi';
 
@@ -47,6 +51,74 @@ export async function createTask(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  // Step 1: Check pool throttle (read-only, no transaction needed)
+  let poolStatus: { pool_balance: string; pool_baseline: string; next_cycle_at: Date | null } | null = null;
+  try {
+    const rows = await query<any[]>(
+      'SELECT pool_balance, pool_baseline, next_cycle_at FROM user_accounts WHERE user_id = ?',
+      [userId]
+    );
+    poolStatus = rows?.[0] ?? null;
+  } catch (_err) {
+    // If no account exists or query fails, allow the request (no throttle)
+  }
+
+  if (poolStatus) {
+    const poolCurrent = Number(poolStatus.pool_balance);
+    const poolBaseline = Number(poolStatus.pool_baseline);
+    const delayMs = computeThrottleDelay(poolCurrent, poolBaseline, MAX_THROTTLE_DELAY_MS);
+
+    if (delayMs === -1) {
+      const nextCycleAt = poolStatus.next_cycle_at;
+      const suggestedWaitSeconds = nextCycleAt
+        ? Math.max(0, Math.floor((nextCycleAt.getTime() - Date.now()) / 1000))
+        : 3600;
+      res.status(429).json({
+        code: 'POOL_EXHAUSTED',
+        message: '池塘额度已耗尽',
+        data: { poolCurrent, poolBaseline, nextCycleAt, suggestedWaitSeconds },
+      });
+      return;
+    }
+
+    if (delayMs > 0) {
+      await sleep(delayMs);
+    }
+  }
+
+  // Step 2: Pre-deduct credits BEFORE calling Tripo3D API
+  // Quick balance pre-check (non-locking) to fail fast
+  let preDeductResult: DeductResult | null = null;
+  try {
+    const status = await creditManager.getStatus(userId);
+    const totalBalance = status.wallet_balance + status.pool_balance;
+    if (totalBalance < ESTIMATED_CREDIT_COST) {
+      res.status(422).json({ code: 'INSUFFICIENT_CREDITS', message: '额度不足' });
+      return;
+    }
+  } catch (_err) {
+    // If status check fails, allow the request to proceed
+  }
+
+  // Use a temp taskId for pre-deduction; will be updated after Tripo3D returns real task_id
+  const tempTaskId = `temp:${userId}:${Date.now()}`;
+  try {
+    preDeductResult = await creditManager.preDeduct(userId, ESTIMATED_CREDIT_COST, tempTaskId);
+    if (!preDeductResult.success) {
+      if (preDeductResult.errorCode === 'INSUFFICIENT_CREDITS') {
+        res.status(422).json({ code: 'INSUFFICIENT_CREDITS', message: '额度不足' });
+      } else if (preDeductResult.errorCode === 'CONCURRENT_CONFLICT') {
+        res.status(409).json({ code: 'CONCURRENT_CONFLICT', message: '并发冲突，请重试' });
+      } else {
+        res.status(422).json({ code: 'INSUFFICIENT_CREDITS', message: '额度不足' });
+      }
+      return;
+    }
+  } catch (_err) {
+    // If user has no account, allow the request (no credit deduction)
+    preDeductResult = null;
+  }
+
   let tripoTaskId: string;
   try {
     let requestBody: Record<string, unknown>;
@@ -68,12 +140,32 @@ export async function createTask(req: Request, res: Response): Promise<void> {
     if (tripoResp.data?.code !== 0) throw new Error(tripoResp.data?.message ?? 'Tripo3D API 返回错误');
     tripoTaskId = tripoResp.data.data.task_id as string;
   } catch (err) {
+    // Tripo3D call failed — refund the pre-deduction if it was made
+    if (preDeductResult?.success) {
+      try {
+        await creditManager.refund(userId, tempTaskId);
+      } catch (refundErr) {
+        console.error('[TaskController] 退款失败 (tempTaskId):', (refundErr as Error).message);
+      }
+    }
     if (axios.isAxiosError(err)) {
       res.status(502).json({ code: 3002, message: 'AI 服务暂时不可用', detail: err.message });
     } else {
       res.status(502).json({ code: 3002, message: 'AI 服务暂时不可用', detail: String(err) });
     }
     return;
+  }
+
+  // Update the ledger record's task_id from tempTaskId to the real Tripo3D task_id
+  if (preDeductResult?.success) {
+    try {
+      await query(
+        "UPDATE credit_ledger SET task_id = ? WHERE task_id = ? AND user_id = ? AND event_type = 'pre_deduct'",
+        [tripoTaskId, tempTaskId, userId]
+      );
+    } catch (err) {
+      console.error('[TaskController] 更新 ledger task_id 失败:', (err as Error).message);
+    }
   }
 
   try {
@@ -102,8 +194,9 @@ export async function listTasks(req: Request, res: Response): Promise<void> {
       [userId, pageSize, offset]
     );
     const countRows = await query<Array<{ total: number }>>('SELECT COUNT(*) AS total FROM tasks WHERE user_id = ?', [userId]);
-    res.json({ tasks: rows, total: Number(countRows[0]?.total ?? 0), page, pageSize });
+    res.json({ data: rows, total: Number(countRows[0]?.total ?? 0), page, pageSize });
   } catch (err) {
+    console.error('[TaskController] listTasks error:', err);
     res.status(500).json({ code: 5001, message: '服务器内部错误' });
   }
 }

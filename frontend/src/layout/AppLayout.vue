@@ -26,52 +26,25 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { usePluginMessageBridge } from '../composables/usePluginMessageBridge'
 import { useTheme } from '../composables/useTheme'
 import { usePermissions } from '../composables/usePermissions'
-import { setToken, removeAllTokens } from '../utils/token'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
-// 初始化主题同步（模块加载时已自动执行，此处确保响应式引用存在）
 useTheme()
 
-const { fetchAllowedActions, can } = usePermissions()
-
-// 集成 PostMessage 握手
-usePluginMessageBridge({
-  onInit: async ({ token }) => {
-    setToken(token)
-    await fetchAllowedActions()
-  },
-  onTokenUpdate: (token) => {
-    setToken(token)
-  },
-  onDestroy: () => {
-    removeAllTokens()
-  }
-})
+const { can } = usePermissions()
 
 const activeRoute = computed(() => route.path)
 
 function handleNavSelect(index: string) {
   router.push(index)
 }
-
-onMounted(async () => {
-  // 如果已有 token（非首次加载），直接加载权限
-  const { getToken } = await import('../utils/token')
-  const token = getToken()
-  if (token) {
-    await fetchAllowedActions()
-  }
-  // 否则等待 INIT 消息（由 usePluginMessageBridge 的 onInit 回调处理）
-})
 </script>
 
 <style scoped>

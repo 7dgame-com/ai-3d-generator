@@ -99,6 +99,51 @@ adminRouter.put('/config', async (req: Request, res: Response): Promise<void> =>
   }
 });
 
+// ─── GET /api/admin/balance ──────────────────────────────────────────────────
+
+adminRouter.get('/balance', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const rows = await query<Array<{ value: string }>>(
+      "SELECT `value` FROM system_config WHERE `key` = 'tripo3d_api_key' LIMIT 1"
+    );
+    if (!rows || rows.length === 0) {
+      res.json({ configured: false });
+      return;
+    }
+
+    let apiKey: string;
+    try {
+      apiKey = decrypt(rows[0].value);
+    } catch {
+      res.json({ configured: false });
+      return;
+    }
+
+    const resp = await axios.get('https://api.tripo3d.ai/v2/openapi/user/balance', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      timeout: 10000,
+    });
+
+    const data = resp.data?.data ?? resp.data;
+    const balance = data?.balance ?? data;
+    res.json({
+      configured: true,
+      available: Number(balance?.available ?? balance?.balance ?? 0),
+      frozen: Number(balance?.frozen ?? 0),
+    });
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      const status = err.response?.status;
+      if (status === 401 || status === 403) {
+        res.status(422).json({ code: 4001, message: 'API Key 无效' });
+        return;
+      }
+    }
+    console.error('[AdminController] GET /balance error:', err);
+    res.status(502).json({ code: 3002, message: '查询余额失败' });
+  }
+});
+
 // ─── GET /api/admin/usage ────────────────────────────────────────────────────
 
 adminRouter.get('/usage', async (_req: Request, res: Response): Promise<void> => {

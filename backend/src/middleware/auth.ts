@@ -56,7 +56,13 @@ export async function auth(req: Request, res: Response, next: NextFunction): Pro
 
     // Main backend returns user info on success
     const data = response.data;
-    const userId: number = data?.data?.user_id ?? data?.user_id ?? data?.id;
+    const rawUserId = data?.data?.user_id ?? data?.data?.id ?? data?.user_id ?? data?.id;
+    const userId = Number(rawUserId);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      res.status(401).json({ code: 1001, message: 'Token 无效或已过期' });
+      return;
+    }
+    console.log('[AuthMiddleware] resolved userId:', userId);
 
     (req as AuthenticatedRequest).user = {
       userId,
@@ -74,7 +80,7 @@ export async function auth(req: Request, res: Response, next: NextFunction): Pro
         return;
       }
       // Network error or timeout
-      console.error('[AuthMiddleware] 调用 verify-token 失败:', err.message);
+      console.error('[AuthMiddleware] 调用 verify-token 失败:', err.message, err.response?.status, JSON.stringify(err.response?.data));
     } else {
       console.error('[AuthMiddleware] 未知错误:', String(err));
     }

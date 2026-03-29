@@ -110,6 +110,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { usePermissions } from '../composables/usePermissions'
+import { waitForToken } from '../utils/token'
 import { getUsageSummary, getUsageHistory } from '../api/index'
 import { mapStatusToI18nKey, getStatusType } from '../utils/statusMapper'
 import type { UsageSummary, UsageHistoryItem } from '../api/index'
@@ -125,6 +126,8 @@ const dateRange = ref<[string, string] | null>(null)
 const typeFilter = ref<'' | 'text_to_model' | 'image_to_model'>('')
 
 onMounted(async () => {
+  const token = await waitForToken()
+  if (!token) return
   await fetchAllowedActions()
   if (!can('view-usage')) {
     router.replace('/no-permission')

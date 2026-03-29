@@ -11,6 +11,7 @@
 
 import { query } from '../db/connection';
 import { decrypt } from './crypto';
+import { creditManager } from './creditManager';
 
 const TRIPO_API_BASE = 'https://api.tripo3d.ai/v2/openapi';
 const POLL_INTERVAL_MS = 3000;
@@ -41,6 +42,18 @@ async function markTaskFailed(taskId: string, errorMessage: string): Promise<voi
     "UPDATE tasks SET status = 'failed', error_message = ?, completed_at = NOW() WHERE task_id = ?",
     [errorMessage, taskId]
   );
+
+  try {
+    const taskRows = await query<Array<{ user_id: number }>>(
+      'SELECT user_id FROM tasks WHERE task_id = ? LIMIT 1',
+      [taskId]
+    );
+    if (taskRows && taskRows.length > 0) {
+      await creditManager.refund(taskRows[0].user_id, taskId);
+    }
+  } catch (err) {
+    console.error(`[TaskPoller] 退款失败 (taskId=${taskId}):`, (err as Error).message);
+  }
 }
 
 /**
@@ -51,6 +64,18 @@ async function markTaskTimeout(taskId: string): Promise<void> {
     "UPDATE tasks SET status = 'timeout', error_message = '生成超时', completed_at = NOW() WHERE task_id = ?",
     [taskId]
   );
+
+  try {
+    const taskRows = await query<Array<{ user_id: number }>>(
+      'SELECT user_id FROM tasks WHERE task_id = ? LIMIT 1',
+      [taskId]
+    );
+    if (taskRows && taskRows.length > 0) {
+      await creditManager.refund(taskRows[0].user_id, taskId);
+    }
+  } catch (err) {
+    console.error(`[TaskPoller] 超时退款失败 (taskId=${taskId}):`, (err as Error).message);
+  }
 }
 
 /**
@@ -76,10 +101,11 @@ async function handleSuccess(
 
   if (taskRows && taskRows.length > 0) {
     const userId = taskRows[0].user_id;
-    await query(
-      'INSERT INTO credit_usage (user_id, task_id, credits_used) VALUES (?, ?, ?)',
-      [userId, taskId, creditCost]
-    );
+    try {
+      await creditManager.confirmDeduct(userId, taskId, creditCost);
+    } catch (err) {
+      console.error(`[TaskPoller] confirmDeduct 失败 (taskId=${taskId}):`, (err as Error).message);
+    }
   }
 }
 

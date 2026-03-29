@@ -214,6 +214,9 @@ export const updateTaskMeta = (taskId: string, metaId: number) =>
 export const getAdminConfig = () =>
   api.get<AdminConfig>('/admin/config')
 
+export const getAdminBalance = () =>
+  api.get<{ configured: boolean; available?: number; frozen?: number }>('/admin/balance')
+
 export const saveAdminConfig = (apiKey: string) =>
   api.put<{ success: boolean }>('/admin/config', { apiKey })
 
@@ -224,6 +227,11 @@ export const getAdminUsage = () =>
 
 export const getUsageSummary = () =>
   api.get<UsageSummary>('/usage')
+
+export const verifyToken = () =>
+  mainApi.get<{ roles: string[]; username: string; id: number }>('/plugin/verify-token', {
+    params: { plugin_name: 'ai-3d-generator' }
+  })
 
 export const getUsageHistory = (params?: {
   startDate?: string

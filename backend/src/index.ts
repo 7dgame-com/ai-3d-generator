@@ -10,10 +10,12 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { testConnection } from './db/connection';
 import { startPoller } from './services/taskPoller';
+import { startScheduler, stopScheduler } from './services/quotaScheduler';
 import adminRoutes from './routes/admin';
 import taskRoutes from './routes/task';
 import usageRoutes from './routes/usage';
 import downloadRoutes from './routes/download';
+import creditsRoutes from './routes/credits';
 
 const app = express();
 const PORT: string | number = process.env.PORT || 8087;
@@ -42,6 +44,7 @@ app.use('/api', adminRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/usage', usageRoutes);
 app.use('/api/download', downloadRoutes);
+app.use('/api', creditsRoutes);
 
 // ========== 全局错误处理 ==========
 app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
@@ -58,7 +61,22 @@ app.listen(PORT, async () => {
   try {
     await testConnection();
     await startPoller();
+    await startScheduler();
   } catch (err) {
-    console.error('[Server] 数据库连接失败:', (err as Error).message);
+    console.error('[Server] 关键服务启动失败，退出:', (err as Error).message);
+    process.exit(1);
   }
+});
+
+// ========== 进程退出时清理 ==========
+process.on('SIGTERM', () => {
+  console.log('[Server] 收到 SIGTERM，正在关闭...');
+  stopScheduler();
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('[Server] 收到 SIGINT，正在关闭...');
+  stopScheduler();
+  process.exit(0);
 });

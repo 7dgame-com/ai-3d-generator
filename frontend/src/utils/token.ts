@@ -18,6 +18,43 @@ export function setToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token)
 }
 
+/**
+ * 等待 token 就绪：若 localStorage 中已有 token 则立即 resolve；
+ * 否则监听父框架 INIT 消息，收到后从 payload 中取 token 并设置，再 resolve。
+ * timeout 超时后以 null resolve，调用方自行处理。
+ */
+export function waitForToken(timeoutMs = 8000): Promise<string | null> {
+  const existing = getToken()
+  if (existing) {
+    console.log('[waitForToken] found existing token in localStorage')
+    return Promise.resolve(existing)
+  }
+
+  console.log('[waitForToken] no token, waiting for INIT message...')
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', handler)
+      console.warn('[waitForToken] timed out waiting for INIT')
+      resolve(null)
+    }, timeoutMs)
+
+    function handler(event: MessageEvent) {
+      if (event.source !== window.parent) return
+      const { type, payload } = (event.data || {}) as { type?: string; payload?: { token?: string } }
+      console.log('[waitForToken] received message:', type)
+      if (type === 'INIT' && payload?.token) {
+        clearTimeout(timer)
+        window.removeEventListener('message', handler)
+        setToken(payload.token)
+        console.log('[waitForToken] INIT received, token set')
+        resolve(payload.token)
+      }
+    }
+
+    window.addEventListener('message', handler)
+  })
+}
+
 export function removeToken() {
   localStorage.removeItem(TOKEN_KEY)
 }

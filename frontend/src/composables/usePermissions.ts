@@ -31,14 +31,10 @@ import { getToken } from '../utils/token'
 // Plugin identifier - must match the plugin name registered in the main system
 const PLUGIN_NAME = 'ai-3d-generator'
 
-// 主后端 API 基础地址
-// Main backend API base URL
-const MAIN_API_URL = import.meta.env.VITE_MAIN_API_URL || 'http://localhost:8082'
-
-// 创建独立的 Axios 实例用于调用主后端 API
-// Create separate Axios instance for calling main backend API
+// 主后端 API 通过 nginx 反向代理访问，使用相对路径
+// Main backend API is accessed via nginx reverse proxy, use relative path
 const mainApi: AxiosInstance = axios.create({
-  baseURL: `${MAIN_API_URL}/v1/plugin`,
+  baseURL: '/v1/plugin',
   timeout: 5000,
   headers: {
     'Content-Type': 'application/json'

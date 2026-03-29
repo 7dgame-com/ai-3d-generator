@@ -122,7 +122,7 @@ export async function getUsageHistory(req: AuthenticatedRequest, res: Response):
     );
 
     res.json({
-      history: rows.map((r) => ({
+      data: rows.map((r) => ({
         taskId: r.task_id,
         type: r.type,
         prompt: r.prompt ? r.prompt.slice(0, 50) : null,
