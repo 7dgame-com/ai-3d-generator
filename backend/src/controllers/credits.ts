@@ -12,8 +12,9 @@ import { creditManager } from '../services/creditManager';
 
 export async function getStatusHandler(req: AuthenticatedRequest, res: Response): Promise<void> {
   const userId = req.user.userId;
+  const providerId = req.query.provider_id as string | undefined;
   try {
-    const status = await creditManager.getStatus(userId);
+    const status = await creditManager.getStatus(userId, providerId);
     res.json({ data: status });
   } catch (err) {
     console.error('[CreditsController] GET /credits/status error:', err);
@@ -22,8 +23,9 @@ export async function getStatusHandler(req: AuthenticatedRequest, res: Response)
 }
 
 export async function rechargeHandler(req: AuthenticatedRequest, res: Response): Promise<void> {
-  const { userId, wallet_amount, pool_amount, total_duration, cycle_duration } = req.body as {
+  const { userId, provider_id, wallet_amount, pool_amount, total_duration, cycle_duration } = req.body as {
     userId: number;
+    provider_id?: string;
     wallet_amount: number;
     pool_amount: number;
     total_duration: number;
@@ -35,8 +37,13 @@ export async function rechargeHandler(req: AuthenticatedRequest, res: Response):
     return;
   }
 
+  if (!provider_id) {
+    res.status(422).json({ code: 'MISSING_PROVIDER', message: '缺少 provider_id 参数' });
+    return;
+  }
+
   try {
-    await creditManager.recharge(userId, { wallet_amount, pool_amount, total_duration, cycle_duration });
+    await creditManager.recharge(userId, provider_id, { wallet_amount, pool_amount, total_duration, cycle_duration });
     res.json({ success: true });
   } catch (err: any) {
     if (err.code === 'INVALID_AMOUNT' || err.code === 'INVALID_PARAMS') {

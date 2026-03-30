@@ -18,6 +18,18 @@
 
     <!-- 生成区域 -->
     <el-card class="section-card">
+      <!-- 提供商选择器（仅当启用提供商数量 > 1 时显示） -->
+      <el-form-item v-if="enabledProviders.length > 1" :label="t('provider.label')" style="margin-bottom: 16px;">
+        <el-select v-model="selectedProvider" :placeholder="t('provider.select')" style="width: 200px;">
+          <el-option
+            v-for="pid in enabledProviders"
+            :key="pid"
+            :label="t(`provider.${pid}`, pid)"
+            :value="pid"
+          />
+        </el-select>
+      </el-form-item>
+
       <el-tabs v-model="activeTab">
         <!-- 文本生成 Tab -->
         <el-tab-pane :label="t('generator.textTab')" name="text">
@@ -185,6 +197,7 @@ import {
   createTask,
   listTasks,
   getAdminConfig,
+  getEnabledProviders,
   getDownloadProxyUrl,
   verifyToken,
 } from '../api/index'
@@ -206,6 +219,10 @@ const loadingTasks = ref(false)
 const tasks = ref<Task[]>([])
 const apiKeyConfigured = ref(false)
 const isRoot = ref(false)
+
+// Provider selection
+const enabledProviders = ref<string[]>([])
+const selectedProvider = ref<string>('')
 
 // Image upload
 const selectedImageFile = ref<File | null>(null)
@@ -231,7 +248,7 @@ onMounted(async () => {
   console.log('[GeneratorView] waitForToken resolved:', token ? 'has token' : 'null')
   if (!token) return
   await fetchAllowedActions()
-  await Promise.all([loadAdminConfig(), loadTasks(), loadCurrentUser()])
+  await Promise.all([loadAdminConfig(), loadTasks(), loadCurrentUser(), loadEnabledProviders()])
 })
 
 onUnmounted(() => {
@@ -256,6 +273,18 @@ async function loadAdminConfig() {
     apiKeyConfigured.value = res.data.configured
   } catch {
     apiKeyConfigured.value = false
+  }
+}
+
+async function loadEnabledProviders() {
+  try {
+    const res = await getEnabledProviders()
+    enabledProviders.value = res.data.providers ?? []
+    if (enabledProviders.value.length > 0) {
+      selectedProvider.value = enabledProviders.value[0]
+    }
+  } catch {
+    enabledProviders.value = []
   }
 }
 
@@ -289,7 +318,12 @@ async function handleTextGenerate() {
 
   generatingText.value = true
   try {
-    const res = await createTask({ type: 'text_to_model', prompt: prompt.value })
+    const params: { type: 'text_to_model'; prompt: string; provider_id?: string } = {
+      type: 'text_to_model',
+      prompt: prompt.value,
+    }
+    if (selectedProvider.value) params.provider_id = selectedProvider.value
+    const res = await createTask(params)
     const newTask = res.data
     tasks.value.unshift(newTask)
     startPolling(newTask.taskId, (updated) => updateTask(updated))
@@ -338,7 +372,13 @@ async function handleImageGenerate() {
   try {
     const base64 = await fileToBase64(file)
     const mimeType = file.type as 'image/jpeg' | 'image/png' | 'image/webp'
-    const res = await createTask({ type: 'image_to_model', imageBase64: base64, mimeType })
+    const params: { type: 'image_to_model'; imageBase64: string; mimeType: 'image/jpeg' | 'image/png' | 'image/webp'; provider_id?: string } = {
+      type: 'image_to_model',
+      imageBase64: base64,
+      mimeType,
+    }
+    if (selectedProvider.value) params.provider_id = selectedProvider.value
+    const res = await createTask(params)
     const newTask = res.data
     tasks.value.unshift(newTask)
     startPolling(newTask.taskId, (updated) => updateTask(updated))

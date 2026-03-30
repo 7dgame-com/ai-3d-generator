@@ -145,12 +145,14 @@ export interface Task {
 export interface CreateTextTaskParams {
   type: 'text_to_model'
   prompt: string
+  provider_id?: string
 }
 
 export interface CreateImageTaskParams {
   type: 'image_to_model'
   imageBase64: string
   mimeType: 'image/jpeg' | 'image/png' | 'image/webp'
+  provider_id?: string
 }
 
 export interface TaskListResponse {
@@ -211,19 +213,20 @@ export const updateTaskMeta = (taskId: string, metaId: number) =>
 
 // ─── 管理员 API ──────────────────────────────────────────────────────────────
 
-export const getAdminConfig = () =>
-  api.get<AdminConfig>('/admin/config')
+export const getAdminConfig = (provider_id?: string) =>
+  api.get<AdminConfig>('/admin/config', { params: provider_id ? { provider_id } : undefined })
 
-export const getAdminBalance = () =>
-  api.get<{ configured: boolean; available?: number; frozen?: number }>('/admin/balance')
+export const getAdminBalance = (provider_id?: string) =>
+  api.get<{ configured: boolean; available?: number; frozen?: number }>('/admin/balance', { params: provider_id ? { provider_id } : undefined })
 
-export const saveAdminConfig = (apiKey: string) =>
-  api.put<{ success: boolean }>('/admin/config', { apiKey })
+export const saveAdminConfig = (apiKey: string, provider_id?: string) =>
+  api.put<{ success: boolean }>('/admin/config', { apiKey, ...(provider_id ? { provider_id } : {}) })
+
+export const getEnabledProviders = () =>
+  api.get<{ providers: string[] }>('/admin/providers')
 
 export const getAdminUsage = () =>
-  api.get<AdminUsage>('/admin/usage')
-
-// ─── 用量 API ────────────────────────────────────────────────────────────────
+  api.get<AdminUsage>('/admin/usage')// ─── 用量 API ────────────────────────────────────────────────────────────────
 
 export const getUsageSummary = () =>
   api.get<UsageSummary>('/usage')

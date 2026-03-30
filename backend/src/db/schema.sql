@@ -5,6 +5,7 @@ CREATE TABLE tasks (
   id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   task_id       VARCHAR(64) NOT NULL UNIQUE COMMENT 'Tripo3D 任务 ID',
   user_id       INT UNSIGNED NOT NULL COMMENT '主系统用户 ID',
+  provider_id   VARCHAR(32)  NOT NULL DEFAULT 'tripo3d' COMMENT '服务提供商标识符',
   type          ENUM('text_to_model', 'image_to_model') NOT NULL,
   prompt        TEXT COMMENT '文本提示词（image-to-3D 时为空）',
   status        ENUM('queued', 'processing', 'success', 'failed', 'timeout') NOT NULL DEFAULT 'queued',
@@ -17,7 +18,8 @@ CREATE TABLE tasks (
   completed_at  DATETIME COMMENT '完成时间',
   INDEX idx_user_id (user_id),
   INDEX idx_status (status),
-  INDEX idx_created_at (created_at)
+  INDEX idx_created_at (created_at),
+  INDEX idx_provider_id (provider_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE credit_usage (
@@ -40,7 +42,8 @@ CREATE TABLE system_config (
 
 CREATE TABLE user_accounts (
   id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  user_id          INT UNSIGNED NOT NULL UNIQUE COMMENT '主系统用户 ID',
+  user_id          INT UNSIGNED NOT NULL COMMENT '主系统用户 ID',
+  provider_id      VARCHAR(32)  NOT NULL COMMENT '服务提供商标识符，如 tripo3d、hyper3d',
 
   wallet_balance             DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT 'Wallet 余额',
   pool_balance               DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT 'Pool 余额',
@@ -57,12 +60,15 @@ CREATE TABLE user_accounts (
   created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-  INDEX idx_next_cycle (next_cycle_at)
+  UNIQUE KEY uk_user_provider (user_id, provider_id),
+  INDEX idx_next_cycle (next_cycle_at),
+  INDEX idx_provider (provider_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE credit_ledger (
   id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id     INT UNSIGNED NOT NULL,
+  provider_id VARCHAR(32)  NOT NULL DEFAULT 'tripo3d' COMMENT '服务提供商标识符',
   event_type  ENUM(
     'recharge',
     'inject',
@@ -81,19 +87,22 @@ CREATE TABLE credit_ledger (
   INDEX idx_user_id (user_id),
   INDEX idx_task_id (task_id),
   UNIQUE KEY uk_idempotency (idempotency_key),
-  INDEX idx_created_at (created_at)
+  INDEX idx_created_at (created_at),
+  INDEX idx_provider_user (provider_id, user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE quota_jobs (
   id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id       INT UNSIGNED NOT NULL,
+  provider_id   VARCHAR(32)  NOT NULL DEFAULT 'tripo3d' COMMENT '服务提供商标识符',
   job_type      ENUM('inject', 'settle') NOT NULL,
-  cycle_key     VARCHAR(64) NOT NULL COMMENT 'user_id:cycle_start_at，幂等键',
+  cycle_key     VARCHAR(64) NOT NULL COMMENT '{provider_id}:{user_id}:{cycle_start_at}，幂等键',
   status        ENUM('pending', 'done', 'failed') NOT NULL DEFAULT 'pending',
   executed_at   DATETIME,
   error_message VARCHAR(256),
   created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
   UNIQUE KEY uk_cycle_key (cycle_key),
-  INDEX idx_user_status (user_id, status)
+  INDEX idx_user_status (user_id, status),
+  INDEX idx_provider_user_status (provider_id, user_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

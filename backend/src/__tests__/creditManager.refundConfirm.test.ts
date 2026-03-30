@@ -49,17 +49,17 @@ describe('CreditManager.refund', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }]) // UPDATE user_accounts
       .mockResolvedValueOnce([{}]); // INSERT refund ledger
 
-    await manager.refund(1, 'task-001');
+    await manager.refund(1, 'tripo3d', 'task-001');
 
     // UPDATE should add walletRefund=30 to wallet, poolRefund=50 to pool
     const updateCall = mockQuery.mock.calls[1];
-    expect(updateCall[1]).toEqual([30, 50, 1]);
+    expect(updateCall[1]).toEqual([30, 50, 1, 'tripo3d']);
 
     // INSERT refund ledger with positive deltas
     const ledgerCall = mockQuery.mock.calls[2];
     expect(ledgerCall[0]).toContain('credit_ledger');
     expect(ledgerCall[0]).toContain('refund');
-    expect(ledgerCall[1]).toEqual([1, 30, 50, 'task-001']);
+    expect(ledgerCall[1]).toEqual([1, 'tripo3d', 30, 50, 'task-001']);
 
     expect(mockCommit).toHaveBeenCalled();
   });
@@ -71,20 +71,20 @@ describe('CreditManager.refund', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }])
       .mockResolvedValueOnce([{}]);
 
-    await manager.refund(1, 'task-002');
+    await manager.refund(1, 'tripo3d', 'task-002');
 
     const updateCall = mockQuery.mock.calls[1];
-    expect(updateCall[1]).toEqual([80, 0, 1]);
+    expect(updateCall[1]).toEqual([80, 0, 1, 'tripo3d']);
 
     const ledgerCall = mockQuery.mock.calls[2];
-    expect(ledgerCall[1]).toEqual([1, 80, 0, 'task-002']);
+    expect(ledgerCall[1]).toEqual([1, 'tripo3d', 80, 0, 'task-002']);
   });
 
   // No pre_deduct record found — should rollback and return without error
   it('rolls back and returns silently when no pre_deduct record found', async () => {
     mockQuery.mockResolvedValueOnce([[]]); // empty ledger rows
 
-    await manager.refund(1, 'task-nonexistent');
+    await manager.refund(1, 'tripo3d', 'task-nonexistent');
 
     expect(mockRollback).toHaveBeenCalled();
     expect(mockCommit).not.toHaveBeenCalled();
@@ -94,7 +94,7 @@ describe('CreditManager.refund', () => {
   it('rolls back transaction on unexpected DB error', async () => {
     mockQuery.mockRejectedValueOnce(new Error('DB error'));
 
-    await expect(manager.refund(1, 'task-003')).rejects.toThrow('DB error');
+    await expect(manager.refund(1, 'tripo3d', 'task-003')).rejects.toThrow('DB error');
     expect(mockRollback).toHaveBeenCalled();
     expect(mockRelease).toHaveBeenCalled();
   });
@@ -106,7 +106,7 @@ describe('CreditManager.refund', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }])
       .mockResolvedValueOnce([{}]);
 
-    await manager.refund(1, 'task-004');
+    await manager.refund(1, 'tripo3d', 'task-004');
     expect(mockRelease).toHaveBeenCalled();
   });
 });

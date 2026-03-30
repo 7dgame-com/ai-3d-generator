@@ -88,4 +88,10 @@ export default {
     success: 'Success',
     failed: 'Failed',
   },
+  provider: {
+    label: 'Provider',
+    select: 'Select Provider',
+    tripo3d: 'Tripo3D',
+    hyper3d: 'Hyper3D',
+  },
 }

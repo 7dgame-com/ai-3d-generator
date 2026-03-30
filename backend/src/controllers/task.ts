@@ -1,31 +1,41 @@
 import { Request, Response } from 'express';
-import axios from 'axios';
 import { query } from '../db/connection';
 import { decrypt } from '../services/crypto';
 import { addTaskToPoller } from '../services/taskPoller';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { creditManager, computeThrottleDelay, sleep, DeductResult } from '../services/creditManager';
+import { providerRegistry } from '../adapters/ProviderRegistry';
 
 const ESTIMATED_CREDIT_COST = 30;
 const MAX_THROTTLE_DELAY_MS = 30000;
 
-const TRIPO_API_BASE = 'https://api.tripo3d.ai/v2/openapi';
-
-async function getApiKey(): Promise<string> {
+async function getApiKey(providerId: string): Promise<string> {
+  const configKey = `${providerId}_api_key`;
   const rows = await query<Array<{ value: string }>>(
-    "SELECT `value` FROM system_config WHERE `key` = 'tripo3d_api_key' LIMIT 1"
+    'SELECT `value` FROM system_config WHERE `key` = ? LIMIT 1',
+    [configKey]
   );
   if (!rows || rows.length === 0) {
-    throw Object.assign(new Error('API Key 未配置'), { code: 3001, status: 503 });
+    throw Object.assign(new Error('API Key 未配置'), { code: 'PROVIDER_NOT_CONFIGURED', status: 503 });
   }
   return decrypt(rows[0].value);
 }
 
 export async function createTask(req: Request, res: Response): Promise<void> {
   const userId = (req as AuthenticatedRequest).user.userId;
-  const { type, prompt, imageBase64, mimeType } = req.body as {
-    type?: string; prompt?: string; imageBase64?: string; mimeType?: string;
+  const { type, prompt, imageBase64, mimeType, provider_id: rawProviderId } = req.body as {
+    type?: string; prompt?: string; imageBase64?: string; mimeType?: string; provider_id?: string;
   };
+
+  const providerId = rawProviderId ?? 'tripo3d';
+
+  // Validate provider_id
+  if (!providerRegistry.isEnabled(providerId)) {
+    res.status(422).json({ code: 'INVALID_PROVIDER', message: '无效或未启用的服务提供商' });
+    return;
+  }
+
+  const adapter = providerRegistry.get(providerId)!;
 
   if (!type || !['text_to_model', 'image_to_model'].includes(type)) {
     res.status(422).json({ code: 4001, message: '参数错误', errors: ['type 无效'] });
@@ -44,10 +54,10 @@ export async function createTask(req: Request, res: Response): Promise<void> {
 
   let apiKey: string;
   try {
-    apiKey = await getApiKey();
+    apiKey = await getApiKey(providerId);
   } catch (err) {
-    const e = err as { code?: number; status?: number; message?: string };
-    res.status(e.status ?? 503).json({ code: e.code ?? 3001, message: e.message ?? 'API Key 未配置' });
+    const e = err as { code?: string; status?: number; message?: string };
+    res.status(e.status ?? 503).json({ code: e.code ?? 'PROVIDER_NOT_CONFIGURED', message: e.message ?? 'API Key 未配置' });
     return;
   }
 
@@ -55,8 +65,8 @@ export async function createTask(req: Request, res: Response): Promise<void> {
   let poolStatus: { pool_balance: string; pool_baseline: string; next_cycle_at: Date | null } | null = null;
   try {
     const rows = await query<any[]>(
-      'SELECT pool_balance, pool_baseline, next_cycle_at FROM user_accounts WHERE user_id = ?',
-      [userId]
+      'SELECT pool_balance, pool_baseline, next_cycle_at FROM user_accounts WHERE user_id = ? AND provider_id = ?',
+      [userId, providerId]
     );
     poolStatus = rows?.[0] ?? null;
   } catch (_err) {
@@ -76,7 +86,7 @@ export async function createTask(req: Request, res: Response): Promise<void> {
       res.status(429).json({
         code: 'POOL_EXHAUSTED',
         message: '池塘额度已耗尽',
-        data: { poolCurrent, poolBaseline, nextCycleAt, suggestedWaitSeconds },
+        data: { provider_id: providerId, poolCurrent, poolBaseline, nextCycleAt, suggestedWaitSeconds },
       });
       return;
     }
@@ -86,12 +96,13 @@ export async function createTask(req: Request, res: Response): Promise<void> {
     }
   }
 
-  // Step 2: Pre-deduct credits BEFORE calling Tripo3D API
+  // Step 2: Pre-deduct credits BEFORE calling provider API
   // Quick balance pre-check (non-locking) to fail fast
   let preDeductResult: DeductResult | null = null;
   try {
-    const status = await creditManager.getStatus(userId);
-    const totalBalance = status.wallet_balance + status.pool_balance;
+    const statusList = await creditManager.getStatus(userId, providerId);
+    const s = statusList[0];
+    const totalBalance = (s?.wallet_balance ?? 0) + (s?.pool_balance ?? 0);
     if (totalBalance < ESTIMATED_CREDIT_COST) {
       res.status(422).json({ code: 'INSUFFICIENT_CREDITS', message: '额度不足' });
       return;
@@ -100,10 +111,10 @@ export async function createTask(req: Request, res: Response): Promise<void> {
     // If status check fails, allow the request to proceed
   }
 
-  // Use a temp taskId for pre-deduction; will be updated after Tripo3D returns real task_id
+  // Use a temp taskId for pre-deduction; will be updated after provider returns real task_id
   const tempTaskId = `temp:${userId}:${Date.now()}`;
   try {
-    preDeductResult = await creditManager.preDeduct(userId, ESTIMATED_CREDIT_COST, tempTaskId);
+    preDeductResult = await creditManager.preDeduct(userId, providerId, ESTIMATED_CREDIT_COST, tempTaskId);
     if (!preDeductResult.success) {
       if (preDeductResult.errorCode === 'INSUFFICIENT_CREDITS') {
         res.status(422).json({ code: 'INSUFFICIENT_CREDITS', message: '额度不足' });
@@ -119,49 +130,30 @@ export async function createTask(req: Request, res: Response): Promise<void> {
     preDeductResult = null;
   }
 
-  let tripoTaskId: string;
+  let providerTaskId: string;
   try {
-    let requestBody: Record<string, unknown>;
-    if (type === 'text_to_model') {
-      requestBody = { type: 'text_to_model', model_version: 'v2.0-20240919', prompt };
-    } else {
-      const uploadResp = await axios.post(
-        `${TRIPO_API_BASE}/upload`,
-        { file: { type: mimeType, data: imageBase64 } },
-        { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 30000 }
-      );
-      const imageToken: string = uploadResp.data?.data?.image_token;
-      requestBody = { type: 'image_to_model', model_version: 'v2.0-20240919', file: { type: mimeType, file_token: imageToken } };
-    }
-    const tripoResp = await axios.post(`${TRIPO_API_BASE}/task`, requestBody, {
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      timeout: 30000,
-    });
-    if (tripoResp.data?.code !== 0) throw new Error(tripoResp.data?.message ?? 'Tripo3D API 返回错误');
-    tripoTaskId = tripoResp.data.data.task_id as string;
+    const result = await adapter.createTask(apiKey, { type: type as 'text_to_model' | 'image_to_model', prompt, imageBase64, mimeType });
+    providerTaskId = result.taskId;
   } catch (err) {
-    // Tripo3D call failed — refund the pre-deduction if it was made
+    // Provider call failed — refund the pre-deduction if it was made
     if (preDeductResult?.success) {
       try {
-        await creditManager.refund(userId, tempTaskId);
+        await creditManager.refund(userId, providerId, tempTaskId);
       } catch (refundErr) {
         console.error('[TaskController] 退款失败 (tempTaskId):', (refundErr as Error).message);
       }
     }
-    if (axios.isAxiosError(err)) {
-      res.status(502).json({ code: 3002, message: 'AI 服务暂时不可用', detail: err.message });
-    } else {
-      res.status(502).json({ code: 3002, message: 'AI 服务暂时不可用', detail: String(err) });
-    }
+    const e = err as { message?: string };
+    res.status(502).json({ code: 'PROVIDER_UNAVAILABLE', message: 'AI 服务暂时不可用', detail: e.message ?? String(err) });
     return;
   }
 
-  // Update the ledger record's task_id from tempTaskId to the real Tripo3D task_id
+  // Update the ledger record's task_id from tempTaskId to the real provider task_id
   if (preDeductResult?.success) {
     try {
       await query(
         "UPDATE credit_ledger SET task_id = ? WHERE task_id = ? AND user_id = ? AND event_type = 'pre_deduct'",
-        [tripoTaskId, tempTaskId, userId]
+        [providerTaskId, tempTaskId, userId]
       );
     } catch (err) {
       console.error('[TaskController] 更新 ledger task_id 失败:', (err as Error).message);
@@ -170,8 +162,8 @@ export async function createTask(req: Request, res: Response): Promise<void> {
 
   try {
     await query(
-      "INSERT INTO tasks (task_id, user_id, type, prompt, status, progress) VALUES (?, ?, ?, ?, 'queued', 0)",
-      [tripoTaskId, userId, type, prompt ?? null]
+      "INSERT INTO tasks (task_id, user_id, provider_id, type, prompt, status, progress) VALUES (?, ?, ?, ?, ?, 'queued', 0)",
+      [providerTaskId, userId, providerId, type, prompt ?? null]
     );
   } catch (err) {
     console.error('[TaskController] DB insert error:', err);
@@ -179,8 +171,8 @@ export async function createTask(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  addTaskToPoller(tripoTaskId);
-  res.status(201).json({ taskId: tripoTaskId, status: 'queued' });
+  addTaskToPoller(providerTaskId);
+  res.status(201).json({ taskId: providerTaskId, status: 'queued' });
 }
 
 export async function listTasks(req: Request, res: Response): Promise<void> {

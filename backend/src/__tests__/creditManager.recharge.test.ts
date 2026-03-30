@@ -39,6 +39,8 @@ function validParams(overrides: Partial<RechargeParams> = {}): RechargeParams {
   };
 }
 
+const PROVIDER_ID = 'tripo3d';
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('CreditManager.recharge', () => {
@@ -56,20 +58,20 @@ describe('CreditManager.recharge', () => {
 
   // Requirement 1.5: wallet_amount <= 0 → INVALID_AMOUNT
   it('throws INVALID_AMOUNT when wallet_amount is 0', async () => {
-    await expect(manager.recharge(1, validParams({ wallet_amount: 0 }))).rejects.toMatchObject({
+    await expect(manager.recharge(1, PROVIDER_ID, validParams({ wallet_amount: 0 }))).rejects.toMatchObject({
       code: 'INVALID_AMOUNT',
     });
   });
 
   it('throws INVALID_AMOUNT when wallet_amount is negative', async () => {
-    await expect(manager.recharge(1, validParams({ wallet_amount: -100 }))).rejects.toMatchObject({
+    await expect(manager.recharge(1, PROVIDER_ID, validParams({ wallet_amount: -100 }))).rejects.toMatchObject({
       code: 'INVALID_AMOUNT',
     });
   });
 
   // Requirement 1.6: pool_amount < 0 → INVALID_AMOUNT
   it('throws INVALID_AMOUNT when pool_amount is negative', async () => {
-    await expect(manager.recharge(1, validParams({ pool_amount: -1 }))).rejects.toMatchObject({
+    await expect(manager.recharge(1, PROVIDER_ID, validParams({ pool_amount: -1 }))).rejects.toMatchObject({
       code: 'INVALID_AMOUNT',
     });
   });
@@ -77,26 +79,26 @@ describe('CreditManager.recharge', () => {
   // Requirement 1.7: wallet_amount and pool_amount both 0 → INVALID_AMOUNT
   it('throws INVALID_AMOUNT when both wallet_amount and pool_amount are 0', async () => {
     await expect(
-      manager.recharge(1, validParams({ wallet_amount: 0, pool_amount: 0 }))
+      manager.recharge(1, PROVIDER_ID, validParams({ wallet_amount: 0, pool_amount: 0 }))
     ).rejects.toMatchObject({ code: 'INVALID_AMOUNT' });
   });
 
   // Requirement 6.4: cycle_duration out of range → INVALID_PARAMS
   it('throws INVALID_PARAMS when cycle_duration < 60', async () => {
-    await expect(manager.recharge(1, validParams({ cycle_duration: 59, total_duration: 59 }))).rejects.toMatchObject({
+    await expect(manager.recharge(1, PROVIDER_ID, validParams({ cycle_duration: 59, total_duration: 59 }))).rejects.toMatchObject({
       code: 'INVALID_PARAMS',
     });
   });
 
   it('throws INVALID_PARAMS when cycle_duration > 43200', async () => {
     await expect(
-      manager.recharge(1, validParams({ cycle_duration: 43201, total_duration: 43201 }))
+      manager.recharge(1, PROVIDER_ID, validParams({ cycle_duration: 43201, total_duration: 43201 }))
     ).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
   });
 
   it('throws INVALID_PARAMS when total_duration < cycle_duration', async () => {
     await expect(
-      manager.recharge(1, validParams({ cycle_duration: 1440, total_duration: 720 }))
+      manager.recharge(1, PROVIDER_ID, validParams({ cycle_duration: 1440, total_duration: 720 }))
     ).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
   });
 
@@ -110,7 +112,7 @@ describe('CreditManager.recharge', () => {
       total_duration: 10080, // 7 cycles
     });
 
-    await manager.recharge(1, params);
+    await manager.recharge(1, PROVIDER_ID, params);
 
     // wallet_injection_per_cycle = 1000 * 1440 / 10080 ≈ 142.857...
     const expectedInjection = 1000 * 1440 / 10080;
@@ -125,7 +127,7 @@ describe('CreditManager.recharge', () => {
   // Requirement 1.1: pool_amount written as pool_balance and pool_baseline
   it('writes pool_amount as both pool_balance and pool_baseline', async () => {
     const params = validParams({ pool_amount: 500 });
-    await manager.recharge(1, params);
+    await manager.recharge(1, PROVIDER_ID, params);
 
     const upsertCall = mockQuery.mock.calls[1];
     // pool_amount appears twice in the INSERT values (pool_balance and pool_baseline)
@@ -142,18 +144,19 @@ describe('CreditManager.recharge', () => {
       cycle_duration: 1440,
       total_duration: 10080,
     });
-    await manager.recharge(1, params);
+    await manager.recharge(1, PROVIDER_ID, params);
 
     const ledgerCall = mockQuery.mock.calls[2];
     expect(ledgerCall[0]).toContain('credit_ledger');
     expect(ledgerCall[0]).toContain('recharge');
 
     // wallet_delta should be wallet_amount (1000), not wallet_injection_per_cycle
+    // ledger values: [userId, providerId, wallet_amount, pool_amount, note]
     const ledgerValues = ledgerCall[1] as unknown[];
-    expect(ledgerValues[1]).toBe(1000); // wallet_delta = wallet_amount
+    expect(ledgerValues[2]).toBe(1000); // wallet_delta = wallet_amount (index 2 after userId, providerId)
 
     // note should include wallet_injection_per_cycle
-    const note = ledgerValues[3] as string;
+    const note = ledgerValues[4] as string;
     expect(note).toContain('wallet_amount=1000');
     expect(note).toContain('wallet_injection_per_cycle=');
     expect(note).toContain('cycles_remaining=');
@@ -165,26 +168,44 @@ describe('CreditManager.recharge', () => {
       .mockResolvedValueOnce([]) // SELECT FOR UPDATE
       .mockRejectedValueOnce(new Error('DB error')); // UPSERT fails
 
-    await expect(manager.recharge(1, validParams())).rejects.toThrow('DB error');
+    await expect(manager.recharge(1, PROVIDER_ID, validParams())).rejects.toThrow('DB error');
     expect(mockRollback).toHaveBeenCalled();
     expect(mockRelease).toHaveBeenCalled();
   });
 
   // Happy path: pool_amount = 0 is valid
   it('accepts pool_amount = 0', async () => {
-    await expect(manager.recharge(1, validParams({ pool_amount: 0 }))).resolves.toBeUndefined();
+    await expect(manager.recharge(1, PROVIDER_ID, validParams({ pool_amount: 0 }))).resolves.toBeUndefined();
   });
 
   // Happy path: cycle_duration at boundary values
   it('accepts cycle_duration = 60 (minimum)', async () => {
     await expect(
-      manager.recharge(1, validParams({ cycle_duration: 60, total_duration: 60 }))
+      manager.recharge(1, PROVIDER_ID, validParams({ cycle_duration: 60, total_duration: 60 }))
     ).resolves.toBeUndefined();
   });
 
   it('accepts cycle_duration = 43200 (maximum)', async () => {
     await expect(
-      manager.recharge(1, validParams({ cycle_duration: 43200, total_duration: 43200 }))
+      manager.recharge(1, PROVIDER_ID, validParams({ cycle_duration: 43200, total_duration: 43200 }))
     ).resolves.toBeUndefined();
+  });
+
+  // provider_id is included in SQL queries
+  it('includes provider_id in user_accounts query', async () => {
+    await manager.recharge(1, PROVIDER_ID, validParams());
+
+    const selectCall = mockQuery.mock.calls[0];
+    expect(selectCall[0]).toContain('provider_id');
+    expect(selectCall[1]).toContain(PROVIDER_ID);
+  });
+
+  // provider_id is included in credit_ledger INSERT
+  it('includes provider_id in credit_ledger INSERT', async () => {
+    await manager.recharge(1, PROVIDER_ID, validParams());
+
+    const ledgerCall = mockQuery.mock.calls[2];
+    expect(ledgerCall[0]).toContain('provider_id');
+    expect(ledgerCall[1]).toContain(PROVIDER_ID);
   });
 });

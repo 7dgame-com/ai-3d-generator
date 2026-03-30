@@ -1,24 +1,30 @@
 /**
  * AdminController
  *
- * GET  /api/admin/config  — 读取 API Key（脱敏返回）
- * PUT  /api/admin/config  — 验证格式 + 连通性，加密写入 system_config
- * GET  /api/admin/usage   — 全局 credit 消耗统计
+ * GET  /api/admin/config     — 读取 API Key（脱敏返回），支持 provider_id query 参数
+ * PUT  /api/admin/config     — 验证格式 + 连通性，加密写入 system_config，支持 provider_id body 参数
+ * GET  /api/admin/balance    — 查询提供商余额，支持 provider_id query 参数
+ * GET  /api/admin/usage      — 全局 credit 消耗统计
+ * GET  /api/admin/providers  — 返回已启用提供商列表
  */
 
 import { Router, Request, Response } from 'express';
-import axios from 'axios';
 import { query } from '../db/connection';
 import { encrypt, decrypt } from '../services/crypto';
+import { providerRegistry } from '../adapters/ProviderRegistry';
 
 export const adminRouter = Router();
 
 // ─── GET /api/admin/config ───────────────────────────────────────────────────
 
-adminRouter.get('/config', async (_req: Request, res: Response): Promise<void> => {
+adminRouter.get('/config', async (req: Request, res: Response): Promise<void> => {
+  const providerId = (req.query.provider_id as string | undefined) ?? 'tripo3d';
+  const configKey = `${providerId}_api_key`;
+
   try {
     const rows = await query<Array<{ value: string }>>(
-      "SELECT `value` FROM system_config WHERE `key` = 'tripo3d_api_key' LIMIT 1"
+      'SELECT `value` FROM system_config WHERE `key` = ? LIMIT 1',
+      [configKey]
     );
 
     if (!rows || rows.length === 0) {
@@ -46,51 +52,52 @@ adminRouter.get('/config', async (_req: Request, res: Response): Promise<void> =
 // ─── PUT /api/admin/config ───────────────────────────────────────────────────
 
 adminRouter.put('/config', async (req: Request, res: Response): Promise<void> => {
-  const { apiKey } = req.body as { apiKey?: string };
+  const { apiKey, provider_id: rawProviderId } = req.body as { apiKey?: string; provider_id?: string };
+  const providerId = rawProviderId ?? 'tripo3d';
 
-  // 格式验证：tsk_ 开头，长度 >= 10
+  // 格式验证
   if (!apiKey || typeof apiKey !== 'string') {
     res.status(422).json({ code: 4001, message: '参数错误', errors: ['apiKey 不能为空'] });
     return;
   }
 
-  if (!apiKey.startsWith('tsk_') || apiKey.length < 10) {
+  // 获取适配器进行格式和连通性验证
+  const adapter = providerRegistry.get(providerId);
+  if (!adapter) {
+    res.status(422).json({ code: 'INVALID_PROVIDER', message: '无效或未启用的服务提供商' });
+    return;
+  }
+
+  if (!adapter.validateApiKeyFormat(apiKey)) {
     res.status(422).json({
       code: 4001,
       message: '参数错误',
-      errors: ['API Key 格式无效：必须以 tsk_ 开头且长度不少于 10 个字符'],
+      errors: ['API Key 格式无效'],
     });
     return;
   }
 
-  // 连通性验证：调用 Tripo3D balance 接口
+  // 连通性验证
   try {
-    await axios.get('https://api.tripo3d.ai/v2/openapi/user/balance', {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      timeout: 10000,
-    });
+    await adapter.verifyApiKey(apiKey);
   } catch (err) {
-    if (axios.isAxiosError(err)) {
-      const status = err.response?.status;
-      if (status === 401 || status === 403) {
-        res.status(422).json({ code: 4001, message: 'API Key 无效或无权限', errors: ['连通性验证失败'] });
-        return;
-      }
-      const detail = err.message;
-      res.status(502).json({ code: 3002, message: 'AI 服务暂时不可用', detail });
+    const e = err as { code?: number; status?: number; message?: string; detail?: string };
+    if (e.status === 422) {
+      res.status(422).json({ code: e.code ?? 4001, message: e.message ?? 'API Key 无效或无权限', errors: ['连通性验证失败'] });
       return;
     }
-    res.status(502).json({ code: 3002, message: 'AI 服务暂时不可用', detail: String(err) });
+    res.status(502).json({ code: e.code ?? 3002, message: e.message ?? 'AI 服务暂时不可用', detail: e.detail });
     return;
   }
 
   // 加密并 upsert
   try {
     const encrypted = encrypt(apiKey);
+    const configKey = `${providerId}_api_key`;
     await query(
-      `INSERT INTO system_config (\`key\`, \`value\`) VALUES ('tripo3d_api_key', ?)
+      `INSERT INTO system_config (\`key\`, \`value\`) VALUES (?, ?)
        ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`), updated_at = CURRENT_TIMESTAMP`,
-      [encrypted]
+      [configKey, encrypted]
     );
     res.json({ success: true });
   } catch (err) {
@@ -101,10 +108,20 @@ adminRouter.put('/config', async (req: Request, res: Response): Promise<void> =>
 
 // ─── GET /api/admin/balance ──────────────────────────────────────────────────
 
-adminRouter.get('/balance', async (_req: Request, res: Response): Promise<void> => {
+adminRouter.get('/balance', async (req: Request, res: Response): Promise<void> => {
+  const providerId = (req.query.provider_id as string | undefined) ?? 'tripo3d';
+  const configKey = `${providerId}_api_key`;
+
+  const adapter = providerRegistry.get(providerId);
+  if (!adapter) {
+    res.status(422).json({ code: 'INVALID_PROVIDER', message: '无效或未启用的服务提供商' });
+    return;
+  }
+
   try {
     const rows = await query<Array<{ value: string }>>(
-      "SELECT `value` FROM system_config WHERE `key` = 'tripo3d_api_key' LIMIT 1"
+      'SELECT `value` FROM system_config WHERE `key` = ? LIMIT 1',
+      [configKey]
     );
     if (!rows || rows.length === 0) {
       res.json({ configured: false });
@@ -119,29 +136,28 @@ adminRouter.get('/balance', async (_req: Request, res: Response): Promise<void> 
       return;
     }
 
-    const resp = await axios.get('https://api.tripo3d.ai/v2/openapi/user/balance', {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      timeout: 10000,
-    });
-
-    const data = resp.data?.data ?? resp.data;
-    const balance = data?.balance ?? data;
+    const balance = await adapter.getBalance(apiKey);
     res.json({
       configured: true,
-      available: Number(balance?.available ?? balance?.balance ?? 0),
-      frozen: Number(balance?.frozen ?? 0),
+      available: balance.available,
+      frozen: balance.frozen,
     });
   } catch (err) {
-    if (axios.isAxiosError(err)) {
-      const status = err.response?.status;
-      if (status === 401 || status === 403) {
-        res.status(422).json({ code: 4001, message: 'API Key 无效' });
-        return;
-      }
+    const e = err as { status?: number; code?: number; message?: string };
+    if (e.status === 422) {
+      res.status(422).json({ code: e.code ?? 4001, message: e.message ?? 'API Key 无效' });
+      return;
     }
     console.error('[AdminController] GET /balance error:', err);
     res.status(502).json({ code: 3002, message: '查询余额失败' });
   }
+});
+
+// ─── GET /api/admin/providers ────────────────────────────────────────────────
+
+adminRouter.get('/providers', (_req: Request, res: Response): void => {
+  const providers = providerRegistry.getEnabledIds();
+  res.json({ providers });
 });
 
 // ─── GET /api/admin/usage ────────────────────────────────────────────────────

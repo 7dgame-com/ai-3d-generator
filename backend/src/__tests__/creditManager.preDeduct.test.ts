@@ -3,6 +3,7 @@
  * Validates: Requirements 3.1, 3.2, 3.3, 3.4, 8.1, 8.3
  */
 
+import * as fc from 'fast-check';
 import { CreditManager } from '../services/creditManager';
 
 // ─── Mock mysql2/promise pool ─────────────────────────────────────────────────
@@ -49,13 +50,13 @@ describe('CreditManager.preDeduct', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }]) // UPDATE
       .mockResolvedValueOnce([{}]); // INSERT ledger
 
-    const result = await manager.preDeduct(1, 80, 'task-001');
+    const result = await manager.preDeduct(1, 'tripo3d', 80, 'task-001');
 
     expect(result).toEqual({ success: true, walletDeducted: 80, poolDeducted: 0 });
 
     // UPDATE should deduct 80 from wallet, 0 from pool
     const updateCall = mockQuery.mock.calls[1];
-    expect(updateCall[1]).toEqual([80, 0, 1, 80, 0]);
+    expect(updateCall[1]).toEqual([80, 0, 1, 'tripo3d', 80, 0]);
   });
 
   // Requirement 3.2: Wallet insufficient — deduct remainder from Pool
@@ -66,12 +67,12 @@ describe('CreditManager.preDeduct', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }])
       .mockResolvedValueOnce([{}]);
 
-    const result = await manager.preDeduct(1, 80, 'task-002');
+    const result = await manager.preDeduct(1, 'tripo3d', 80, 'task-002');
 
     expect(result).toEqual({ success: true, walletDeducted: 30, poolDeducted: 50 });
 
     const updateCall = mockQuery.mock.calls[1];
-    expect(updateCall[1]).toEqual([30, 50, 1, 30, 50]);
+    expect(updateCall[1]).toEqual([30, 50, 1, 'tripo3d', 30, 50]);
   });
 
   // Requirement 3.3: Wallet = 0 — deduct entirely from Pool
@@ -81,7 +82,7 @@ describe('CreditManager.preDeduct', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }])
       .mockResolvedValueOnce([{}]);
 
-    const result = await manager.preDeduct(1, 50, 'task-003');
+    const result = await manager.preDeduct(1, 'tripo3d', 50, 'task-003');
 
     expect(result).toEqual({ success: true, walletDeducted: 0, poolDeducted: 50 });
   });
@@ -91,7 +92,7 @@ describe('CreditManager.preDeduct', () => {
     // wallet=10, pool=20, need=50 → total=30 < 50
     mockQuery.mockResolvedValueOnce([[{ wallet_balance: '10.00', pool_balance: '20.00' }]]);
 
-    const result = await manager.preDeduct(1, 50, 'task-004');
+    const result = await manager.preDeduct(1, 'tripo3d', 50, 'task-004');
 
     expect(result).toEqual({ success: false, errorCode: 'INSUFFICIENT_CREDITS' });
     expect(mockRollback).toHaveBeenCalled();
@@ -102,7 +103,7 @@ describe('CreditManager.preDeduct', () => {
   it('returns INSUFFICIENT_CREDITS when user account does not exist', async () => {
     mockQuery.mockResolvedValueOnce([[]]); // empty rows
 
-    const result = await manager.preDeduct(99, 10, 'task-005');
+    const result = await manager.preDeduct(99, 'tripo3d', 10, 'task-005');
 
     expect(result).toEqual({ success: false, errorCode: 'INSUFFICIENT_CREDITS' });
     expect(mockRollback).toHaveBeenCalled();
@@ -114,7 +115,7 @@ describe('CreditManager.preDeduct', () => {
       .mockResolvedValueOnce([[{ wallet_balance: '100.00', pool_balance: '100.00' }]])
       .mockResolvedValueOnce([{ affectedRows: 0 }]); // concurrent update won the race
 
-    const result = await manager.preDeduct(1, 50, 'task-006');
+    const result = await manager.preDeduct(1, 'tripo3d', 50, 'task-006');
 
     expect(result).toEqual({ success: false, errorCode: 'CONCURRENT_CONFLICT' });
     expect(mockRollback).toHaveBeenCalled();
@@ -128,13 +129,13 @@ describe('CreditManager.preDeduct', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }])
       .mockResolvedValueOnce([{}]);
 
-    await manager.preDeduct(1, 70, 'task-007');
+    await manager.preDeduct(1, 'tripo3d', 70, 'task-007');
 
     const ledgerCall = mockQuery.mock.calls[2];
     expect(ledgerCall[0]).toContain('credit_ledger');
     expect(ledgerCall[0]).toContain('pre_deduct');
     // wallet_delta = -50, pool_delta = -20
-    expect(ledgerCall[1]).toEqual([1, -50, -20, 'task-007']);
+    expect(ledgerCall[1]).toEqual([1, 'tripo3d', -50, -20, 'task-007']);
   });
 
   // Requirement 8.1: atomicity — rollback on DB error
@@ -143,7 +144,7 @@ describe('CreditManager.preDeduct', () => {
       .mockResolvedValueOnce([[{ wallet_balance: '100.00', pool_balance: '100.00' }]])
       .mockRejectedValueOnce(new Error('DB connection lost'));
 
-    await expect(manager.preDeduct(1, 50, 'task-008')).rejects.toThrow('DB connection lost');
+    await expect(manager.preDeduct(1, 'tripo3d', 50, 'task-008')).rejects.toThrow('DB connection lost');
     expect(mockRollback).toHaveBeenCalled();
     expect(mockRelease).toHaveBeenCalled();
   });
@@ -154,7 +155,67 @@ describe('CreditManager.preDeduct', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }])
       .mockResolvedValueOnce([{}]);
 
-    await manager.preDeduct(1, 10, 'task-009');
+    await manager.preDeduct(1, 'tripo3d', 10, 'task-009');
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  // Feature: multi-provider-credits, Property 7: API 失败退款
+  // When provider API call fails, the pre-deducted amount from Provider_Account
+  // should be fully refunded, restoring the balance to its pre-deduction state.
+  it('Property 7: refund fully restores balance after API failure (fast-check)', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.tuple(
+          fc.integer({ min: 1, max: 9999 }),
+          fc.constantFrom('tripo3d', 'hyper3d')
+        ),
+        async ([userId, providerId]) => {
+          jest.clearAllMocks();
+          mockBeginTransaction.mockResolvedValue(undefined);
+          mockCommit.mockResolvedValue(undefined);
+          mockRollback.mockResolvedValue(undefined);
+          mockRelease.mockReturnValue(undefined);
+
+          const walletDeducted = 30;
+          const poolDeducted = 20;
+          const taskId = `task-pbt-${userId}-${providerId}`;
+
+          // Step 1: mock a successful preDeduct
+          mockQuery
+            .mockResolvedValueOnce([[{ wallet_balance: '100.00', pool_balance: '100.00' }]]) // SELECT FOR UPDATE
+            .mockResolvedValueOnce([{ affectedRows: 1 }])                                    // UPDATE user_accounts
+            .mockResolvedValueOnce([{}]);                                                     // INSERT pre_deduct ledger
+
+          const deductResult = await manager.preDeduct(userId, providerId, walletDeducted + poolDeducted, taskId);
+
+          if (!deductResult.success) return; // skip if preDeduct failed unexpectedly
+
+          // Step 2: mock a refund that reads the pre_deduct ledger and restores balance
+          mockQuery
+            .mockResolvedValueOnce([[{ wallet_delta: `-${walletDeducted}.00`, pool_delta: `-${poolDeducted}.00` }]]) // SELECT pre_deduct ledger
+            .mockResolvedValueOnce([{ affectedRows: 1 }])                                                            // UPDATE user_accounts (restore)
+            .mockResolvedValueOnce([{}]);                                                                             // INSERT refund ledger
+
+          await manager.refund(userId, providerId, taskId);
+
+          // Step 3: verify the UPDATE query adds back the exact amounts that were deducted
+          const refundUpdateCall = mockQuery.mock.calls.find(
+            (call: any[]) =>
+              typeof call[0] === 'string' &&
+              call[0].includes('UPDATE user_accounts') &&
+              call[0].includes('wallet_balance + ?')
+          );
+
+          expect(refundUpdateCall).toBeDefined();
+          const [, refundParams] = refundUpdateCall!;
+          expect(refundParams[0]).toBe(walletDeducted); // walletRefund
+          expect(refundParams[1]).toBe(poolDeducted);   // poolRefund
+
+          // Step 4: verify the refund uses the same providerId as the preDeduct
+          expect(refundParams[3]).toBe(providerId);
+        }
+      ),
+      { numRuns: 100 }
+    );
   });
 });

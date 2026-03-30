@@ -11,6 +11,10 @@ import cors from 'cors';
 import { testConnection } from './db/connection';
 import { startPoller } from './services/taskPoller';
 import { startScheduler, stopScheduler } from './services/quotaScheduler';
+import { parseEnabledProviders } from './config/providers';
+import { providerRegistry } from './adapters/ProviderRegistry';
+import { tripo3dAdapter } from './adapters/Tripo3DAdapter';
+import { hyper3dAdapter } from './adapters/Hyper3DAdapter';
 import adminRoutes from './routes/admin';
 import taskRoutes from './routes/task';
 import usageRoutes from './routes/usage';
@@ -61,6 +65,21 @@ app.listen(PORT, async () => {
   try {
     await testConnection();
     await startPoller();
+
+    // ========== 注册启用的 Provider 适配器 ==========
+    const enabledProviders = parseEnabledProviders();
+    const adapterMap: Record<string, typeof tripo3dAdapter | typeof hyper3dAdapter> = {
+      tripo3d: tripo3dAdapter,
+      hyper3d: hyper3dAdapter,
+    };
+    for (const providerId of enabledProviders) {
+      const adapter = adapterMap[providerId];
+      if (adapter) {
+        providerRegistry.register(adapter);
+        console.log(`[Server] 已注册 Provider 适配器: ${providerId}`);
+      }
+    }
+
     await startScheduler();
   } catch (err) {
     console.error('[Server] 关键服务启动失败，退出:', (err as Error).message);

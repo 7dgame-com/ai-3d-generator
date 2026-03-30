@@ -88,4 +88,10 @@ export default {
     success: '成功',
     failed: '失败',
   },
+  provider: {
+    label: '服务商',
+    select: '选择服务商',
+    tripo3d: 'Tripo3D',
+    hyper3d: 'Hyper3D',
+  },
 }
